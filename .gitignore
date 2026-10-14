@@ -1,4 +1,5 @@
+*.npz
+*.pyc
 .venv/
 __pycache__/
-*.pyc
 pip.log

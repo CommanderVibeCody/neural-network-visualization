@@ -305,6 +305,8 @@ class App:
         ui = self.ui
         if self.step > 0:
             ui.button((20, H - 60, 120, 40), "< Back", lambda m: self.go(self.step - 1))
+        else:
+            ui.button((20, H - 60, 120, 40), "< Menu", lambda m: self.to_menu())
         ui.button((W - 160, H - 60, 140, 40), next_label,
                   lambda m: self.go(self.step + 1), active=True, enabled=next_enabled)
         if self.error:
@@ -851,10 +853,16 @@ class App:
                 self.go(self.step + 1)
         return True
 
+    def to_menu(self):
+        self.result = "menu"
+        self.running = False
+
     def run(self):
         script = AutoScript(self) if self.args.auto else None
+        self.result = "quit"
+        self.running = True
         running = True
-        while running:
+        while running and self.running:
             for e in pygame.event.get():
                 running = self.handle(e) and running
             if self.step == 5 and self.train_state and self.train_state["phase"] != "done":
@@ -866,7 +874,7 @@ class App:
             if script and not script.tick():
                 running = False
             self.clock.tick(30)
-        pygame.quit()
+        return self.result
 
 
 class AutoScript:
@@ -964,8 +972,52 @@ class AutoScript:
         return True
 
 
-if __name__ == "__main__":
+def run_menu(args):
+    """Start screen: choose Dataset Training or Live Evolution Training."""
+    screen = pygame.display.set_mode((W, H))
+    pygame.display.set_caption("Neural Network Visualizer")
+    ui, clock, choice = UI(screen), pygame.time.Clock(), [None]
+    frame = 0
+    while choice[0] is None:
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE):
+                return "quit"
+            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                ui.click(e.pos, 0)
+            if e.type == pygame.KEYDOWN and e.key in (pygame.K_1, pygame.K_d):
+                choice[0] = "dataset"
+            if e.type == pygame.KEYDOWN and e.key in (pygame.K_2, pygame.K_e):
+                choice[0] = "evolution"
+        screen.fill(BG)
+        ui.begin()
+        ui.text("Neural Network Visualizer", (W // 2, 130), font=ui.big, anchor="center")
+        ui.text("Choose a mode", (W // 2, 170), DIM, anchor="center")
+        ui.button((W // 2 - 420, 240, 400, 220), "1  Dataset Training",
+                  lambda m: choice.__setitem__(0, "dataset"), active=True)
+        ui.button((W // 2 + 20, 240, 400, 220), "2  Live Evolution Training",
+                  lambda m: choice.__setitem__(0, "evolution"), active=True)
+        ui.text("Keras on sklearn datasets: train/val/test, K-fold,", (W // 2 - 220, 490), DIM, ui.small, anchor="center")
+        ui.text("live activations and error curves.", (W // 2 - 220, 510), DIM, ui.small, anchor="center")
+        ui.text("Cars with NN brains learn to drive a track", (W // 2 + 220, 490), DIM, ui.small, anchor="center")
+        ui.text("via a genetic algorithm (sensors -> throttle/steer).", (W // 2 + 220, 510), DIM, ui.small, anchor="center")
+        ui.text("ESC quit", (W // 2, H - 40), DIM, ui.small, anchor="center")
+        pygame.display.flip()
+        frame += 1
+        if args.auto and frame == 3:
+            os.makedirs(args.screenshot_dir, exist_ok=True)
+            path = os.path.join(args.screenshot_dir, "0_menu.png")
+            pygame.image.save(screen, path)
+            print("saved", path, flush=True)
+            return args.auto_target
+        clock.tick(30)
+    return choice[0]
+
+
+def main():
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--mode", choices=["menu", "dataset", "evolution"], default="menu")
+    ap.add_argument("--auto-target", choices=["dataset", "evolution"], default="dataset",
+                    help="In --auto with --mode menu: which mode to enter after the menu screenshot")
     ap.add_argument("--dataset", default="Iris", choices=list(DATASETS))
     ap.add_argument("--epochs", type=int, default=300)
     ap.add_argument("--auto", action="store_true")
@@ -983,5 +1035,28 @@ if __name__ == "__main__":
     g.add_argument("--no-stratified", dest="stratified", action="store_false")
     ap.add_argument("--show-test-curve", action="store_true", default=False,
                     help="Didactic: plot test during training (default off)")
-    App(ap.parse_args()).run()
+    # Evolution mode
+    ap.add_argument("--track", default="Oval", choices=["Oval", "Curvy", "Kidney"])
+    ap.add_argument("--population", type=int, default=50)
+    ap.add_argument("--gen-time", type=int, default=20, help="max seconds per generation")
+    ap.add_argument("--generations", type=int, default=8, help="generations to run in --auto evolution")
+    args = ap.parse_args()
+
+    pygame.init()
+    mode = args.mode
+    while mode not in ("quit", None):
+        if mode == "menu":
+            mode = run_menu(args)
+            continue
+        if mode == "dataset":
+            res = App(args).run()
+        else:
+            from evolution.app import EvoApp
+            res = EvoApp(args).run()
+        mode = "menu" if (res == "menu" and not args.auto) else "quit"
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    main()
     sys.exit(0)

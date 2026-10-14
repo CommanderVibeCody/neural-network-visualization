@@ -1,12 +1,15 @@
 # Neural Network Visualization
 
-A Pygame desktop app that walks you through a configuration wizard, then trains a
-`tf.keras` network on a public dataset while drawing **every layer live**.
+A Pygame desktop app with two modes, chosen on the start screen:
 
-It follows the usual ML lecture pipeline: **train / validation / test** splits,
-optional **K-fold (stratified) cross-validation**, live **train vs val vs test**
-error curves, an overfitting hint, and a final comparison of the three errors.
-The held-out **test set is never used for training or model selection**.
+1. **Dataset Training** – configure and train a `tf.keras` network on a public dataset
+   (train/val/test, K-fold CV), visualizing every layer live.
+2. **Live Evolution Training** – a population of cars with neural-network brains learns to
+   drive a track via a **genetic algorithm**; the best car's network is drawn live.
+
+![Start menu](screenshots/0_menu.png)
+
+# Mode 1 — Dataset Training
 
 ![Train hold-out](screenshots/6_train_holdout_iris.png)
 
@@ -91,3 +94,69 @@ SDL_VIDEODRIVER=dummy python nn_visualizer.py --auto --dataset Diabetes --split 
 Lines: green = positive weight, red = negative, thicker = larger `|w|`.  
 Curves: green train, orange validation, red test (test for display only).  
 Neuron brightness = activation for the current validation sample.
+
+# Mode 2 — Live Evolution Training
+
+![Evolution running](screenshots/e5_fitness_plot_curvy.png)
+
+### Wizard
+| Step | What you choose |
+|------|-----------------|
+| 1. Sensors & Network | Number of distance rays spread over 180° in front of the car (default 10), optional speed input, hidden layer count, per-layer/group neuron count + activation (same group-select editor as dataset mode). |
+| 2. Output | Fixed 2 outputs: **throttle** and **steering**. `tanh/tanh` (default, throttle in [-1,1] with weak reverse) or `sigmoid` throttle (forward only) + `tanh` steering. |
+| 3. Evolution | Population (default 50), mutation rate %, mutation std, elitism, uniform crossover on/off, max generation time, track (**Oval**, **Curvy**, **Kidney**) with preview. |
+| 4. Run | Live simulation. |
+
+![Sensors & network](screenshots/e1_network.png)
+![Output](screenshots/e2_output.png)
+![Evolution params](screenshots/e3_evolution_oval.png)
+
+### How it works
+- **Tracks** (`evolution/tracks.py`): hand-made closed centerlines; inner/outer wall polylines are offsets (tiny loops at tight bends are removed). Gates (checkpoints) span inner→outer at each centerline point.
+- **Car physics** (`evolution/sim.py`): heading/bicycle model, throttle sets target speed with limited acceleration, steering turns proportional to speed. Fully vectorized over the population with numpy.
+- **Sensors:** ray casting against all wall segments → normalized distances in [0,1].
+- **Death:** wall collision, no gate progress for 3.5 s (stuck/too slow), or crossing the last gate backwards.
+- **Fitness:** gates passed (laps count) + fraction toward next gate + small average-speed bonus.
+- **Brain** (`evolution/brain.py`): numpy forward pass for the whole population at once. Genome = flattened weights in Keras `get_weights()` order (`W1,b1,W2,b2,…`, kernels shaped `(in, out)`).
+- **GA** (`evolution/ga.py`): tournament selection (k=3), elitism, uniform crossover, gaussian mutation. A new generation starts when all cars are dead or the time limit is hit.
+- **Rendering:** all cars (best = yellow with white outline, dead = faded), sensor rays of the best car, live network diagram of the best alive car (sensor inputs, hidden activations, throttle/steer) and a best/average fitness-per-generation plot with grid and numeric axes (`render.py`, shared helpers).
+
+![Sim running](screenshots/e4_sim_running_curvy.png)
+![Oval fitness](screenshots/e5_fitness_plot_oval.png)
+
+### Controls (Run)
+| Key / UI | Action |
+|----------|--------|
+| Space | Pause / resume |
+| + / - | Simulation speed (1, 2, 4, 8, 16 steps per frame) |
+| F | Fast-forward (cars not rendered, max steps per frame) |
+| S | Save best genome to `best_genome.npz` |
+| B / Menu button | Back to start menu |
+| Config button | Back to evolution parameters |
+| Esc | Quit |
+
+### Evolution CLI flags
+| Flag | Meaning |
+|------|---------|
+| `--mode menu\|dataset\|evolution` | Start screen (default) or jump directly into a mode |
+| `--track Oval\|Curvy\|Kidney` | Track (default Oval) |
+| `--population N` | Population size (default 50) |
+| `--gen-time S` | Max seconds per generation (default 20) |
+| `--generations N` | Generations to run in `--auto` (default 8) |
+| `--auto-target dataset\|evolution` | With `--auto` and `--mode menu`: mode entered after the menu screenshot |
+
+Headless:
+```bash
+SDL_VIDEODRIVER=dummy python nn_visualizer.py --auto --auto-target evolution --track Oval --generations 8
+SDL_VIDEODRIVER=dummy python nn_visualizer.py --mode evolution --auto --track Curvy --generations 15 --gen-time 25
+```
+
+## Project layout
+```
+nn_visualizer.py     start menu + dataset-mode wizard/training
+datasets.py          dataset loading, hold-out / K-fold splits
+widgets.py           self-drawn Pygame widgets
+render.py            shared network diagram + line chart
+evolution/
+  tracks.py  sim.py  brain.py  ga.py  app.py
+```
