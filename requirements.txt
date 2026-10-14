@@ -1,0 +1,5 @@
+tensorflow>=2.15
+pandas
+scikit-learn
+pygame
+numpy
