@@ -31,6 +31,8 @@ class SplitConfig:
     test_pct_kfold: int = 20
     stratified: bool = True
     seed: int = 42
+    # Didactic only: plot test during training (default OFF — not proper practice)
+    show_test_curve: bool = False
 
     def validate(self, task):
         errs = []

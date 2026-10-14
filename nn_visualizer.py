@@ -44,13 +44,15 @@ class App:
         self.split = SplitConfig(
             mode=args.split, train_pct=args.train_pct, val_pct=args.val_pct,
             test_pct=args.test_pct, k=args.k, test_pct_kfold=args.test_pct_kfold,
-            stratified=args.stratified and True, seed=args.seed)
+            stratified=args.stratified and True, seed=args.seed,
+            show_test_curve=getattr(args, "show_test_curve", False))
         self.select_dataset(args.dataset)
         self.n_hidden = 2
         self.hidden = [{"units": 8, "act": "relu"}, {"units": 6, "act": "relu"}]
         self.selected = {0}
         self.model = None
         self.train_state = None
+        self.log_scale = False  # L key toggles log y-axis on the error plot
 
     # ---------------- configuration ----------------
     def select_dataset(self, name):
@@ -214,10 +216,13 @@ class App:
 
         tr_l, tr_m = self._eval(self.X_tr, self.y_tr)
         va_l, va_m = self._eval(self.X_va, self.y_va)
-        te_l, te_m = self._eval(self.X_te, self.y_te)  # display only — never for selection
         st["epoch"] += 1
-        st["train_losses"].append(tr_l); st["val_losses"].append(va_l); st["test_losses"].append(te_l)
-        st["train_metrics"].append(tr_m); st["val_metrics"].append(va_m); st["test_metrics"].append(te_m)
+        st["train_losses"].append(tr_l); st["val_losses"].append(va_l)
+        st["train_metrics"].append(tr_m); st["val_metrics"].append(va_m)
+        # Test curve only if didactic peeking is enabled (never used for model selection).
+        if self.split.show_test_curve:
+            te_l, te_m = self._eval(self.X_te, self.y_te)
+            st["test_losses"].append(te_l); st["test_metrics"].append(te_m)
 
         # Best epoch by validation loss (model selection — test never used)
         if va_l < st["best_val"] - 1e-9:
@@ -242,9 +247,12 @@ class App:
         st = self.train_state
         if st["phase"] == "holdout":
             st["final_train"] = self._display_error(st["train_losses"][-1], st["train_metrics"][-1])
-            st["final_val"] = self._display_error(st["val_losses"][st["best_epoch"] - 1],
-                                                  st["val_metrics"][st["best_epoch"] - 1])
-            st["final_test"] = self._display_error(st["test_losses"][-1], st["test_metrics"][-1])
+            be = max(1, st["best_epoch"])
+            st["final_val"] = self._display_error(st["val_losses"][be - 1], st["val_metrics"][be - 1])
+            # Evaluate test exactly once on the final model (never during training by default).
+            te_l, te_m = self._eval(self.X_te, self.y_te)
+            st["final_test"] = self._display_error(te_l, te_m)
+            st["final_test_loss"], st["final_test_metric"] = te_l, te_m
             st["phase"] = "done"
             self.step = 6
         elif st["phase"] == "fold":
@@ -276,7 +284,9 @@ class App:
         elif st["phase"] == "final":
             st["final_train"] = self._display_error(st["train_losses"][-1], st["train_metrics"][-1])
             st["final_val"] = st["cv_mean"]  # Error_Estimate from CV
-            st["final_test"] = self._display_error(st["test_losses"][-1], st["test_metrics"][-1])
+            te_l, te_m = self._eval(self.X_te, self.y_te)  # once, after final retrain
+            st["final_test"] = self._display_error(te_l, te_m)
+            st["final_test_loss"], st["final_test_metric"] = te_l, te_m
             st["phase"] = "done"
             self.step = 6
 
@@ -430,7 +440,15 @@ class App:
 
         ui.spinner(40, 440, "Random seed", s.seed, lambda v: setattr(s, "seed", v), lo=0, hi=9999)
 
-        self.draw_split_bar(pygame.Rect(40, 500, W - 80, 140))
+        ui.button((520, 440, 420, 36),
+                  f"Show test curve (didactic, peeking): {'ON' if s.show_test_curve else 'OFF'}",
+                  lambda m: setattr(s, "show_test_curve", not s.show_test_curve),
+                  active=s.show_test_curve)
+        ui.text("Default OFF. Peeking at test during training is not proper practice — "
+                "test is evaluated once at the end.",
+                (520, 482), (240, 160, 100) if s.show_test_curve else DIM, ui.small)
+
+        self.draw_split_bar(pygame.Rect(40, 520, W - 80, 130))
         ok = not self.split.validate(self.ds.task)
         self.nav(next_enabled=ok)
 
@@ -515,33 +533,107 @@ class App:
         half = (MAX_DRAWN - 1) // 2
         return list(range(half)) + [None] + list(range(n - (MAX_DRAWN - 1 - half), n))
 
-    def draw_curves(self, r, series, labels, colors, best_epoch=0):
-        """Multi-series line chart with legend. series = list of float lists (errors or losses)."""
+    def draw_curves(self, r, series, labels, colors, best_epoch=0, log_scale=False):
+        """Error chart with grid, axis ticks/titles, end-value labels, optional log y-scale."""
+        ui = self.ui
         pygame.draw.rect(self.screen, (30, 33, 45), r)
         pygame.draw.rect(self.screen, DIM, r, 1)
-        self.ui.text("Train / Val / Test error", (r.x + 6, r.y + 4), DIM, self.ui.small)
-        usable = [s for s in series if len(s) >= 2]
+        title = "Train / Val error" + (" / Test (peeking)" if any(
+            lab.lower().startswith("test") for lab in labels) else "")
+        title += "  [log]" if log_scale else "  [linear]"
+        ui.text(title + "   (L = toggle log scale)", (r.x + 8, r.y + 4), DIM, ui.small)
+
+        pad_l, pad_r, pad_t, pad_b = 52, 70, 28, 36
+        plot = pygame.Rect(r.x + pad_l, r.y + pad_t, r.w - pad_l - pad_r, r.h - pad_t - pad_b)
+        usable = [s for s in series if len(s) >= 1]
         if not usable:
+            ui.text("Waiting for epochs…", plot.center, DIM, anchor="center")
             return
+
         n = max(len(s) for s in series)
-        allv = np.concatenate([np.asarray(s) for s in usable])
-        lo, hi = float(allv.min()), float(allv.max()) + 1e-8
-        for s, col in zip(series, colors):
-            if len(s) < 2:
+        allv = np.concatenate([np.asarray(s, dtype=float) for s in usable])
+        allv = allv[np.isfinite(allv)]
+        if allv.size == 0:
+            return
+
+        def _fwd(v):
+            v = float(v)
+            if log_scale:
+                return np.log10(max(v, 1e-6))
+            return v
+
+        def _inv(u):
+            return 10 ** u if log_scale else u
+
+        lo_u, hi_u = _fwd(allv.min()), _fwd(allv.max())
+        if hi_u <= lo_u:
+            hi_u = lo_u + (1.0 if not log_scale else 0.5)
+        pad = (hi_u - lo_u) * 0.08
+        lo_u, hi_u = lo_u - pad, hi_u + pad
+        # Error is non-negative; keep linear axis from flooring below 0.
+        if not log_scale and allv.min() >= 0:
+            lo_u = max(0.0, lo_u)
+
+        def y_of(v):
+            u = _fwd(v)
+            return plot.bottom - (u - lo_u) / (hi_u - lo_u) * plot.h
+
+        def x_of(i):
+            return plot.x + (i / max(n - 1, 1)) * plot.w
+
+        # --- grid + y ticks ---
+        n_yt = 5
+        for ti in range(n_yt + 1):
+            u = lo_u + (hi_u - lo_u) * ti / n_yt
+            yy = plot.bottom - ti / n_yt * plot.h
+            pygame.draw.line(self.screen, (48, 52, 68), (plot.x, yy), (plot.right, yy), 1)
+            val = _inv(u)
+            lbl = f"{val:.0e}" if log_scale or val < 0.01 else (f"{val:.3f}" if val < 1 else f"{val:.2f}")
+            ui.text(lbl, (plot.x - 6, yy), DIM, ui.small, anchor="midright")
+
+        # --- x ticks (epochs) ---
+        n_xt = min(6, max(2, n))
+        for ti in range(n_xt):
+            ep = 1 + int(round(ti * (n - 1) / max(n_xt - 1, 1)))
+            xx = x_of(ep - 1)
+            pygame.draw.line(self.screen, (48, 52, 68), (xx, plot.y), (xx, plot.bottom), 1)
+            ui.text(str(ep), (xx, plot.bottom + 4), DIM, ui.small, anchor="midtop")
+
+        pygame.draw.rect(self.screen, DIM, plot, 1)
+        ui.text("epoch", (plot.centerx, r.bottom - 14), DIM, ui.small, anchor="center")
+        # Rotated-ish y title (drawn vertically as stacked letters is ugly; use short label)
+        ui.text("error", (r.x + 6, plot.centery), DIM, ui.small, anchor="center")
+
+        # --- series ---
+        for s, col, lab in zip(series, colors, labels):
+            if len(s) < 1:
                 continue
-            pts = [(r.x + 5 + i * (r.w - 10) / max(n - 1, 1),
-                    r.bottom - 22 - (v - lo) / (hi - lo) * (r.h - 50))
-                   for i, v in enumerate(s)]
-            pygame.draw.lines(self.screen, col, False, pts, 2)
+            pts = [(x_of(i), y_of(v)) for i, v in enumerate(s)]
+            if len(pts) >= 2:
+                pygame.draw.lines(self.screen, col, False, pts, 2)
+            else:
+                pygame.draw.circle(self.screen, col, (int(pts[0][0]), int(pts[0][1])), 3)
+            # End-value label
+            lx, ly = pts[-1]
+            ui.text(f"{s[-1]:.3g}", (lx + 6, ly), col, ui.small, anchor="midleft")
+            pygame.draw.circle(self.screen, col, (int(lx), int(ly)), 3)
+
         if best_epoch > 0 and n > 1:
-            bx = r.x + 5 + (best_epoch - 1) * (r.w - 10) / max(n - 1, 1)
-            pygame.draw.line(self.screen, ACCENT, (bx, r.y + 22), (bx, r.bottom - 20), 1)
-            self.ui.text("best val", (bx + 2, r.y + 22), ACCENT, self.ui.small)
-        lx = r.x + 6
-        for lab, col in zip(labels, colors):
-            pygame.draw.line(self.screen, col, (lx, r.bottom - 10), (lx + 16, r.bottom - 10), 2)
-            self.ui.text(lab, (lx + 20, r.bottom - 16), DIM, self.ui.small)
-            lx += 90
+            bx = x_of(best_epoch - 1)
+            pygame.draw.line(self.screen, ACCENT, (bx, plot.y), (bx, plot.bottom), 1)
+            ui.text("best val", (bx + 3, plot.y + 2), ACCENT, ui.small)
+
+        # Legend + last-value readout
+        lx = plot.x
+        readout = []
+        for lab, col, s in zip(labels, colors, series):
+            pygame.draw.line(self.screen, col, (lx, r.y + 16), (lx + 14, r.y + 16), 2)
+            ui.text(lab, (lx + 18, r.y + 10), DIM, ui.small)
+            if s:
+                readout.append(f"{lab}={s[-1]:.4g}")
+            lx += 70
+        if readout:
+            ui.text("  |  ".join(readout), (lx + 10, r.y + 10), TEXT, ui.small)
 
     def draw_train(self):
         ui, d, st, p = self.ui, self.ds, self.train_state, self.p
@@ -631,22 +723,30 @@ class App:
         else:
             phase = "Hold-out"
         status = "PAUSED" if st["paused"] else phase
+        peek = self.split.show_test_curve
         if d.task == "regression":
-            mtxt = (f"Tr MAE {st['train_metrics'][-1]:.3g}  Val MAE {st['val_metrics'][-1]:.3g}  "
-                    f"Test MAE {st['test_metrics'][-1]:.3g}" if st["train_metrics"] else "")
+            mtxt = (f"Tr MAE {st['train_metrics'][-1]:.3g}  Val MAE {st['val_metrics'][-1]:.3g}"
+                    if st["train_metrics"] else "")
+            if peek and st["test_metrics"]:
+                mtxt += f"  Test MAE {st['test_metrics'][-1]:.3g} (peeking)"
         else:
-            mtxt = (f"Tr acc {st['train_metrics'][-1]*100:.1f}%  Val {st['val_metrics'][-1]*100:.1f}%  "
-                    f"Test {st['test_metrics'][-1]*100:.1f}%" if st["train_metrics"] else "")
+            mtxt = (f"Tr acc {st['train_metrics'][-1]*100:.1f}%  Val {st['val_metrics'][-1]*100:.1f}%"
+                    if st["train_metrics"] else "")
+            if peek and st["test_metrics"]:
+                mtxt += f"  Test {st['test_metrics'][-1]*100:.1f}% (peeking)"
         gap = ""
         if st["train_losses"]:
             te = self._display_error(st["train_losses"][-1], st["train_metrics"][-1])
             ve = self._display_error(st["val_losses"][-1], st["val_metrics"][-1])
             gap = f"  gap(train−val error)={te - ve:+.4f}"
-        ui.text(f"{d.name} | {status} | Ep {st['epoch']}/{self.args.epochs}  "
-                f"loss Tr {st['train_losses'][-1] if st['train_losses'] else 0:.3f} / "
-                f"Val {st['val_losses'][-1] if st['val_losses'] else 0:.3f} / "
-                f"Te {st['test_losses'][-1] if st['test_losses'] else 0:.3f}",
-                (20, 430), font=self.med)
+        loss_line = (f"{d.name} | {status} | Ep {st['epoch']}/{self.args.epochs}  "
+                     f"loss Tr {st['train_losses'][-1] if st['train_losses'] else 0:.3f} / "
+                     f"Val {st['val_losses'][-1] if st['val_losses'] else 0:.3f}")
+        if peek and st["test_losses"]:
+            loss_line += f" / Te {st['test_losses'][-1]:.3f} (peek)"
+        else:
+            loss_line += "  |  test held out until Results"
+        ui.text(loss_line, (20, 430), font=self.med)
         ui.text(mtxt + gap, (20, 455), TEXT, ui.small)
         ui.text(f"Best val @ epoch {st['best_epoch']}" + ("   ⚠ Overfitting?" if st["overfit"] else ""),
                 (20, 475), (240, 180, 80) if st["overfit"] else DIM)
@@ -661,18 +761,19 @@ class App:
                 ui.text(f"Error_Estimate = {st['cv_mean']:.4f} ± {st['cv_std']:.4f}",
                         (tx, ty + 18 + len(st['fold_val_errors']) * 16 + 4), ACCENT, ui.small)
 
-        # Error curves (use display-error so train/val/test are comparable)
+        # Error curves: train + val always; test only if didactic peeking is on.
         err_tr = [self._display_error(a, b) for a, b in zip(st["train_losses"], st["train_metrics"])]
         err_va = [self._display_error(a, b) for a, b in zip(st["val_losses"], st["val_metrics"])]
-        err_te = [self._display_error(a, b) for a, b in zip(st["test_losses"], st["test_metrics"])]
-        self.draw_curves(pygame.Rect(20, 500, W - 40, 160),
-                         [err_tr, err_va, err_te],
-                         ["Train", "Val", "Test"],
-                         [COL_TRAIN, COL_VAL, COL_TEST],
-                         st["best_epoch"])
+        series, labels, colors = [err_tr, err_va], ["Train", "Val"], [COL_TRAIN, COL_VAL]
+        if self.split.show_test_curve and st["test_losses"]:
+            err_te = [self._display_error(a, b) for a, b in zip(st["test_losses"], st["test_metrics"])]
+            series.append(err_te); labels.append("Test*"); colors.append(COL_TEST)
+        self.draw_curves(pygame.Rect(20, 500, W - 40, 175),
+                         series, labels, colors, st["best_epoch"], log_scale=self.log_scale)
 
         ui.button((20, H - 55, 120, 40), "< Back", lambda m: self.go(4))
-        ui.text("SPACE pause  N next sample  R reset  B back  ESC quit", (160, H - 40), DIM, ui.small)
+        ui.text("SPACE pause  N next sample  R reset  L log scale  B back  ESC quit",
+                (160, H - 40), DIM, ui.small)
 
     def draw_results(self):
         ui, st, d = self.ui, self.train_state, self.ds
@@ -683,7 +784,8 @@ class App:
             return
 
         kind = "error (1 − accuracy)" if d.task != "regression" else "error (loss / MSE)"
-        ui.text(f"Lower is better — {kind}. Test was never used for training or model selection.",
+        ui.text(f"Lower is better — {kind}. Test evaluated once on the final model "
+                "(never used for training or model selection).",
                 (40, 110), DIM)
 
         vals = [("Train", st["final_train"], COL_TRAIN),
@@ -742,6 +844,8 @@ class App:
                 elif e.key == pygame.K_n: st["sample"] = (st["sample"] + 1) % max(1, len(self.X_va))
                 elif e.key == pygame.K_r:
                     self.start_training()
+                elif e.key == pygame.K_l:
+                    self.log_scale = not self.log_scale
                 elif e.key == pygame.K_b: self.go(4)
             elif e.key == pygame.K_RETURN and self.step < 5:
                 self.go(self.step + 1)
@@ -847,7 +951,8 @@ class AutoScript:
             if st["train_losses"]:
                 st["final_train"] = a._display_error(st["train_losses"][-1], st["train_metrics"][-1])
                 st["final_val"] = a._display_error(st["val_losses"][-1], st["val_metrics"][-1])
-                st["final_test"] = a._display_error(st["test_losses"][-1], st["test_metrics"][-1])
+                te_l, te_m = a._eval(a.X_te, a.y_te)
+                st["final_test"] = a._display_error(te_l, te_m)
                 if mode == "kfold" and st["cv_mean"] is None and st["fold_val_errors"]:
                     errs = np.array(st["fold_val_errors"])
                     st["cv_mean"], st["cv_std"] = float(errs.mean()), float(errs.std())
@@ -876,5 +981,7 @@ if __name__ == "__main__":
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--stratified", dest="stratified", action="store_true", default=True)
     g.add_argument("--no-stratified", dest="stratified", action="store_false")
+    ap.add_argument("--show-test-curve", action="store_true", default=False,
+                    help="Didactic: plot test during training (default off)")
     App(ap.parse_args()).run()
     sys.exit(0)

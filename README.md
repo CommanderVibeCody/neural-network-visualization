@@ -35,6 +35,8 @@ The held-out **test set is never used for training or model selection**.
 - **K-fold CV:** a held-out test % is removed first; the remaining pool is split into K folds (optionally **stratified**). Each fold is validation once.  
   `Error_Estimate = mean(val errors)` (± std). Then a **final model** is retrained on the whole train pool and evaluated on the untouched test set.
 - **Stratified** preserves class ratios (classification only).
+- **Show test curve (didactic, peeking)** is **OFF by default**. During training only Train and Val (or fold-val) are plotted; test is evaluated **once** on the final model at the Results screen. Enabling the toggle peeks at test during training — not proper practice.
+- Error plot: grid, axis ticks/titles, end-value labels, last-value readout; press **L** for log scale.
 
 ![K-fold training](screenshots/6_train_kfold_iris.png)
 ![Results](screenshots/7_results_kfold_iris.png)
@@ -62,6 +64,7 @@ python nn_visualizer.py
 | `--test-pct-kfold N` | Held-out test % for K-fold (default 20) |
 | `--stratified` / `--no-stratified` | Stratified splits (default on; ignored for regression) |
 | `--seed N` | Shuffle seed (default 42) |
+| `--show-test-curve` | Didactic: plot test during training (default off) |
 | `--auto` | Scripted demo: walk wizard, train, save screenshots, exit |
 | `--seconds N` | Soft training-time budget in `--auto` |
 | `--screenshot-dir DIR` | PNG output dir for `--auto` (default `screenshots`) |
@@ -82,6 +85,7 @@ SDL_VIDEODRIVER=dummy python nn_visualizer.py --auto --dataset Diabetes --split 
 | N | Next validation sample |
 | R | Reset training |
 | B / Back | Return to Output step |
+| L | Toggle log / linear y-scale on the error plot |
 | Esc | Quit |
 
 Lines: green = positive weight, red = negative, thicker = larger `|w|`.  
