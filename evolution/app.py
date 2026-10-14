@@ -44,6 +44,19 @@ class EvoApp:
         self.track_name = getattr(args, "track", "Oval")
         self.result = "quit"
         self.status_msg = ""
+        # Run-time state: initialized here so every code path (interactive or --auto)
+        # can read it before a simulation has been started.
+        self.running = False
+        self.paused = False
+        self.fast = False
+        self.speed_i = 0
+        self.sim = None
+        self.brain = None
+        self.pop = None
+        self.acts = None
+        self.gen = 0
+        self.best_hist, self.avg_hist = [], []
+        self.best_ever, self.best_genome = -1.0, None
 
     # ---------------- config helpers ----------------
     def sizes(self):
@@ -111,6 +124,9 @@ class EvoApp:
         self.sim.reset()
 
     def save_best(self, path="best_genome.npz"):
+        if self.best_genome is None:
+            self.status_msg = "No completed generation yet - nothing to save."
+            return
         np.savez(path, genome=self.best_genome, sizes=np.array(self.brain.sizes),
                  hidden_acts=np.array(self.brain.hidden_acts), out_acts=np.array(self.brain.out_acts),
                  fitness=self.best_ever, track=self.track_name)
@@ -272,7 +288,7 @@ class EvoApp:
         x0 = 790
         nr = pygame.Rect(x0, 56, W - x0 - 10, 300)
         pygame.draw.rect(self.screen, (24, 27, 37), nr, border_radius=6)
-        acts = [a[best] for a in self.acts] if hasattr(self, "acts") else \
+        acts = [a[best] for a in self.acts] if self.acts is not None else \
             [np.zeros(s) for s in self.brain.sizes]
         weights = self.brain.weight_matrices(self.pop[best])
         names = ["in"] + [f"H{i + 1}" for i in range(len(self.hidden))] + ["out"]
@@ -334,7 +350,7 @@ class EvoApp:
         if e.type == pygame.KEYDOWN:
             if e.key == pygame.K_ESCAPE:
                 self.result = "quit"; return False
-            if self.step == 3:
+            if self.step == 3 and self.sim is not None:
                 if e.key == pygame.K_SPACE: self.paused = not self.paused
                 elif e.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
                     self.speed_i = min(len(SPEEDS) - 1, self.speed_i + 1)
@@ -354,7 +370,7 @@ class EvoApp:
             for e in pygame.event.get():
                 if not self.handle(e):
                     self.running = False
-            if self.step == 3 and not self.paused:
+            if self.step == 3 and self.sim is not None and not self.paused:
                 if self.fast:
                     t0 = time.perf_counter()
                     while time.perf_counter() - t0 < 1 / 40:  # fill the frame budget with sim steps
@@ -379,6 +395,7 @@ class EvoAuto:
         self.target_gens = app.args.generations
         self.tag = app.track_name.lower()
         self.sim_shot = False
+        self.resume_frame = 0
 
     def shot(self, name):
         path = os.path.join(self.out, name)

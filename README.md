@@ -160,3 +160,13 @@ render.py            shared network diagram + line chart
 evolution/
   tracks.py  sim.py  brain.py  ga.py  app.py
 ```
+
+## Tests
+
+`tests/test_interactive.py` drives the **interactive** code paths headlessly (no `--auto`) by feeding
+synthetic mouse/key events into the real handlers: menu → evolution wizard → running simulation
+(speed, pause, fast-forward, save), evolution → back to menu, and menu → dataset wizard → training.
+
+```bash
+SDL_VIDEODRIVER=dummy python tests/test_interactive.py     # or: python -m pytest tests
+```

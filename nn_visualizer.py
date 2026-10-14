@@ -4,7 +4,8 @@ import os
 import sys
 import argparse
 
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 import numpy as np
 import pygame
@@ -53,6 +54,12 @@ class App:
         self.model = None
         self.train_state = None
         self.log_scale = False  # L key toggles log y-axis on the error plot
+        self.running = False
+        self.result = "quit"
+        self.p = None
+        self.probe = None
+        self.X_tr = self.y_tr = self.X_va = self.y_va = self.X_te = self.y_te = None
+        self.X_viz_raw = None
 
     # ---------------- configuration ----------------
     def select_dataset(self, name):
